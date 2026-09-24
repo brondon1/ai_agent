@@ -2,7 +2,7 @@
 
 流程：
     任务 ──► Plan-and-Solve 拆分步骤
-              └─ 每一步交给 ReAct 执行（可调用 search_knowledge_base 等工具）
+              └─ 每一步交给 ReAct 执行（可调用 search_knowledge_base、web_search 等工具）
          ──► 汇总得到初稿
          ──► Reflection 自我批评，不通过则由 ReAct 修改
          ──► 最终答案
@@ -19,6 +19,7 @@ from ai_agent.rag import KnowledgeBase
 from ai_agent.react import ReActAgent
 from ai_agent.reflection import Reflector
 from ai_agent.tools import ToolRegistry, default_registry
+from ai_agent.web_search import tavily_search_tool
 
 
 class Agent:
@@ -33,6 +34,10 @@ class Agent:
         self.tools = tools if tools is not None else default_registry()
         if knowledge is not None:
             self.tools.register(knowledge.as_tool())
+        if self.config.tavily_api_key:
+            self.tools.register(
+                tavily_search_tool(self.config.tavily_api_key, self.config.tavily_max_results)
+            )
 
         self.llm = LLM(self.config, client)
         self.react = ReActAgent(self.llm, self.tools, self.config.max_turns)

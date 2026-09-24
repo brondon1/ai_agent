@@ -1,13 +1,14 @@
 [project]
 name = "ai-agent"
-version = "0.2.0"
-description = "ReAct + Plan-and-Solve + Reflection + RAG(Qdrant) 的最简 AI Agent"
+version = "0.3.0"
+description = "ReAct + Plan-and-Solve + Reflection + RAG(Qdrant) + Tavily 的最简 AI Agent"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "anthropic>=1.8,<2",
     "qdrant-client>=1.12",
     "fastembed>=0.5",
+    "tavily-python>=0.7",
 ]
 
 [project.optional-dependencies]

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -24,6 +24,9 @@ class Config:
     collection: str = "knowledge"
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
     top_k: int = 4
+    # Tavily 联网搜索：设置了 key 才会启用 web_search 工具
+    tavily_api_key: str | None = field(default=None, repr=False)
+    tavily_max_results: int = 5
 
     @classmethod
     def from_env(cls) -> Config:
@@ -37,4 +40,8 @@ class Config:
             qdrant_url=os.getenv("QDRANT_URL") or None,
             collection=os.getenv("AI_AGENT_COLLECTION", cls.collection),
             embedding_model=os.getenv("AI_AGENT_EMBEDDING_MODEL", cls.embedding_model),
+            tavily_api_key=os.getenv("TAVILY_API_KEY") or None,
+            tavily_max_results=int(
+                os.getenv("AI_AGENT_TAVILY_MAX_RESULTS", cls.tavily_max_results)
+            ),
         )

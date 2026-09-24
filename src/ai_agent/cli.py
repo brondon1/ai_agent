@@ -32,7 +32,8 @@ def main() -> None:
 
     agent = Agent(config, knowledge=knowledge)
     rag = "开启" if knowledge else "关闭"
-    print(f"AI Agent（模型: {config.model}，RAG: {rag}）。输入 /exit 退出。")
+    web = "开启" if config.tavily_api_key else "关闭"
+    print(f"AI Agent（模型: {config.model}，RAG: {rag}，联网搜索: {web}）。输入 /exit 退出。")
     while True:
         try:
             task = input("\n你> ").strip()

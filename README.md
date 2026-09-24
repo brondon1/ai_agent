@@ -8,6 +8,7 @@
 | **Plan-and-Solve** | 先把任务拆成步骤，逐步交给 ReAct 执行，最后汇总 | `planner.py` |
 | **Reflection** | 自我批评答案，不通过时根据反馈修改 | `reflection.py` |
 | **RAG + Qdrant** | 文档切块向量化存入 Qdrant，作为 `search_knowledge_base` 工具供 ReAct 调用 | `rag/` |
+| **Tavily 联网搜索** | `web_search` 工具，知识库之外或需要最新信息时联网搜索 | `web_search.py` |
 
 ## 执行流程
 
@@ -17,7 +18,7 @@
   ▼
 Plan-and-Solve ── 生成计划（结构化输出：steps 列表）
   │
-  ├─ 第 1 步 ──► ReAct ──► 工具：search_knowledge_base（Qdrant） / calculate / ...
+  ├─ 第 1 步 ──► ReAct ──► 工具：search_knowledge_base（Qdrant） / web_search（Tavily） / calculate / ...
   ├─ 第 2 步 ──► ReAct ──► ...（带上前面步骤的结果）
   │
   ▼
@@ -42,6 +43,7 @@ src/ai_agent/
 ├── rag/
 │   ├── embeddings.py # 向量模型（默认 FastEmbed 本地运行 bge-small-zh）
 │   └── knowledge.py  # 切块、写入 Qdrant、检索、包装成工具
+├── web_search.py     # Tavily 联网搜索工具
 ├── tools.py          # 工具注册表 + 示例工具（当前时间、计算器）
 ├── config.py         # 配置
 └── cli.py            # 命令行入口
@@ -62,6 +64,25 @@ ai-agent --docs ./docs        # 导入 ./docs 下的 .md / .txt 文件，开启 
 ```
 
 首次开启 RAG 时，FastEmbed 会从 Hugging Face 下载向量模型（约 100MB）。
+
+### 开启联网搜索（Tavily）
+
+在 [tavily.com](https://tavily.com) 申请 API key，设置后 Agent 会自动加入 `web_search` 工具：
+
+```bash
+export TAVILY_API_KEY=tvly-xxxx
+ai-agent
+```
+
+也可以单独创建工具，加到自己的工具注册表里：
+
+```python
+from ai_agent import tavily_search_tool
+from ai_agent.tools import default_registry
+
+registry = default_registry()
+registry.register(tavily_search_tool(max_results=3, search_depth="advanced"))
+```
 
 ### 使用 Qdrant 服务（持久化）
 
@@ -140,6 +161,8 @@ agent = Agent(tools=registry)
 | `QDRANT_URL` | 空（内存模式） | Qdrant 服务地址 |
 | `AI_AGENT_COLLECTION` | `knowledge` | Qdrant 集合名 |
 | `AI_AGENT_EMBEDDING_MODEL` | `BAAI/bge-small-zh-v1.5` | FastEmbed 向量模型 |
+| `TAVILY_API_KEY` | 空（不启用） | Tavily API key，设置后启用 `web_search` |
+| `AI_AGENT_TAVILY_MAX_RESULTS` | `5` | 每次搜索返回的结果数 |
 
 每个问题的模型调用次数大约是：1 次规划 + 每步若干次 ReAct + 1 次汇总 + 每轮反思 1～2 次。简单问题可以关掉规划或反思来省钱、提速。
 
