@@ -1,66 +1,32 @@
-from types import SimpleNamespace
-from unittest.mock import MagicMock
+from fakes import HashEmbedder, answer, fake_client, json_answer, response, tool_use
 
-import pytest
-
-from ai_agent.agent import Agent, AgentError
+from ai_agent.agent import Agent
 from ai_agent.config import Config
+from ai_agent.rag import KnowledgeBase
 
 
-def _text(text):
-    return SimpleNamespace(type="text", text=text)
-
-
-def _tool_use(id_, name, tool_input):
-    return SimpleNamespace(type="tool_use", id=id_, name=name, input=tool_input)
-
-
-def _response(stop_reason, *content):
-    return SimpleNamespace(stop_reason=stop_reason, content=list(content))
-
-
-def _agent(*responses, max_turns=20):
-    client = MagicMock()
-    client.beta.messages.create.side_effect = list(responses)
-    return Agent(config=Config(max_turns=max_turns), client=client), client
-
-
-def test_plain_answer():
-    agent, _ = _agent(_response("end_turn", _text("你好")))
-    assert agent.run("hi") == "你好"
-    assert [m["role"] for m in agent.messages] == ["user", "assistant"]
-
-
-def test_tool_call_round_trip():
-    agent, client = _agent(
-        _response("tool_use", _tool_use("t1", "calculate", {"expression": "2 ** 10"})),
-        _response("end_turn", _text("结果是 1024")),
+def test_full_pipeline_with_rag():
+    kb = KnowledgeBase(HashEmbedder())
+    kb.add_texts(["本项目的默认模型是 claude-opus-5。"], source="readme.md")
+    client = fake_client(
+        # Plan-and-Solve：单步计划
+        json_answer({"steps": ["检索默认模型"]}),
+        # ReAct：先检索，再回答
+        response("tool_use", tool_use("t1", "search_knowledge_base", {"query": "默认模型"})),
+        answer("初稿"),
+        # Reflection：不通过 → 修改
+        json_answer({"approved": False, "feedback": "要注明来源"}),
+        answer("默认模型是 claude-opus-5（来源：readme.md）"),
     )
-    assert agent.run("2 的 10 次方？") == "结果是 1024"
+    agent = Agent(Config(), knowledge=kb, client=client)
 
-    tool_results = agent.messages[2]["content"]
-    assert tool_results == [
-        {"type": "tool_result", "tool_use_id": "t1", "content": "1024", "is_error": False}
-    ]
-    kwargs = client.beta.messages.create.call_args.kwargs
-    assert kwargs["fallbacks"] == "default"
-    assert kwargs["thinking"] == {"type": "adaptive"}
+    assert agent.run("默认模型是什么？") == "默认模型是 claude-opus-5（来源：readme.md）"
+    observation = client.beta.messages.create.call_args_list[2].kwargs["messages"][2]
+    assert "readme.md" in observation["content"][0]["content"]
 
 
-def test_refusal_rolls_back_history():
-    agent, _ = _agent(
-        _response("end_turn", _text("第一轮")),
-        _response("refusal"),
-    )
-    agent.run("第一个问题")
-    with pytest.raises(AgentError):
-        agent.run("第二个问题")
-    assert len(agent.messages) == 2
-
-
-def test_max_turns_exceeded():
-    call = _response("tool_use", _tool_use("t", "get_current_time", {}))
-    agent, _ = _agent(call, call, max_turns=2)
-    with pytest.raises(AgentError):
-        agent.run("循环")
-    assert agent.messages == []
+def test_react_only_without_planning_or_reflection():
+    client = fake_client(answer("直接回答"))
+    agent = Agent(Config(use_planning=False, max_reflections=0), client=client)
+    assert agent.run("你好") == "直接回答"
+    assert client.beta.messages.create.call_count == 1

@@ -1,20 +1,24 @@
-"""Agent 主循环：调用 Claude，执行工具，直到模型给出最终回答。"""
+"""把 ReAct、Plan-and-Solve、Reflection 和 RAG 组装在一起的 Agent。
+
+流程：
+    任务 ──► Plan-and-Solve 拆分步骤
+              └─ 每一步交给 ReAct 执行（可调用 search_knowledge_base 等工具）
+         ──► 汇总得到初稿
+         ──► Reflection 自我批评，不通过则由 ReAct 修改
+         ──► 最终答案
+"""
 
 from __future__ import annotations
-
-from typing import Any
 
 import anthropic
 
 from ai_agent.config import Config
+from ai_agent.llm import LLM
+from ai_agent.planner import PlanAndSolve
+from ai_agent.rag import KnowledgeBase
+from ai_agent.react import ReActAgent
+from ai_agent.reflection import Reflector
 from ai_agent.tools import ToolRegistry, default_registry
-
-# 服务端拒答回退：模型因安全分类器拒答时，由 API 按拒答类别自动换用推荐模型重试
-FALLBACK_BETA = "server-side-fallback-2026-07-01"
-
-
-class AgentError(RuntimeError):
-    pass
 
 
 class Agent:
@@ -22,73 +26,22 @@ class Agent:
         self,
         config: Config | None = None,
         tools: ToolRegistry | None = None,
+        knowledge: KnowledgeBase | None = None,
         client: anthropic.Anthropic | None = None,
     ) -> None:
         self.config = config or Config.from_env()
         self.tools = tools if tools is not None else default_registry()
-        # 默认从环境变量 / `ant auth login` 配置中读取凭据
-        self.client = client or anthropic.Anthropic()
-        self.messages: list[dict[str, Any]] = []
+        if knowledge is not None:
+            self.tools.register(knowledge.as_tool())
 
-    def reset(self) -> None:
-        self.messages = []
+        self.llm = LLM(self.config, client)
+        self.react = ReActAgent(self.llm, self.tools, self.config.max_turns)
+        self.planner = PlanAndSolve(self.llm, self.react, self.config.max_plan_steps)
+        self.reflector = Reflector(self.llm, self.react, self.config.max_reflections)
 
-    def run(self, user_input: str) -> str:
-        """发送一条用户消息，跑完工具调用循环，返回最终文本。
-
-        成功时对话历史会保留；失败时回滚本次 run 追加的消息，保证历史始终合法。
-        """
-        start = len(self.messages)
-        self.messages.append({"role": "user", "content": user_input})
-        try:
-            return self._loop()
-        except BaseException:
-            del self.messages[start:]
-            raise
-
-    def _loop(self) -> str:
-        for _ in range(self.config.max_turns):
-            response = self.client.beta.messages.create(
-                model=self.config.model,
-                max_tokens=self.config.max_tokens,
-                system=self.config.system_prompt,
-                thinking={"type": "adaptive"},
-                output_config={"effort": self.config.effort},
-                tools=self.tools.to_params(),
-                messages=self.messages,
-                betas=[FALLBACK_BETA],
-                fallbacks="default",
-            )
-            # 保留完整的 content（含 thinking / tool_use 块），而不只是文本
-            self.messages.append({"role": "assistant", "content": response.content})
-
-            if response.stop_reason == "refusal":
-                raise AgentError("模型拒绝了该请求")
-            if response.stop_reason == "max_tokens":
-                raise AgentError("输出达到 max_tokens 上限，请调大 max_tokens")
-            if response.stop_reason == "pause_turn":
-                continue
-            if response.stop_reason != "tool_use":
-                return _text_of(response.content)
-
-            tool_results = []
-            for block in response.content:
-                if block.type != "tool_use":
-                    continue
-                result, is_error = self.tools.execute(block.name, block.input)
-                tool_results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": result,
-                        "is_error": is_error,
-                    }
-                )
-            # 所有工具结果放在同一条 user 消息里返回
-            self.messages.append({"role": "user", "content": tool_results})
-
-        raise AgentError(f"超过最大轮数 {self.config.max_turns}，仍未得到最终回答")
-
-
-def _text_of(content: list[Any]) -> str:
-    return "".join(block.text for block in content if block.type == "text")
+    def run(self, task: str) -> str:
+        if self.config.use_planning:
+            answer = self.planner.run(task)
+        else:
+            answer = self.react.run(task)
+        return self.reflector.refine(task, answer)
